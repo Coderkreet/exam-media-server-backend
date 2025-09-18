@@ -10,14 +10,24 @@ const config = require('./mediasoup-config');
 const app = express();
 const server = http.createServer(app);
 
-// ✅ FIXED CORS setup - Multiple origins
+// ✅ UPDATED CORS setup - Include Vercel URLs
 const corsOptions = {
   origin: [
-    'http://localhost:3000',  // Student frontend
-    'http://localhost:3001',  // Proctor frontend  
-    'http://localhost:3002',  // Additional frontend
-    'http://localhost:3003',  // More students
-    'http://localhost:3004',  // More students
+    // Local development
+    'http://localhost:3000',
+    'http://localhost:3001',
+    'http://localhost:3002',
+    'http://localhost:3003',
+    'http://localhost:3004',
+    
+    // ✅ Vercel deployed frontends
+    'https://student-frontend-olive.vercel.app',
+    'https://proctor-frontend-three.vercel.app',
+    
+    // ✅ Allow any vercel.app subdomain for development
+    /.*\.vercel\.app$/,
+    
+    // Environment variable fallback
     process.env.CORS_ORIGIN || 'http://localhost:3000'
   ],
   credentials: true,
@@ -28,12 +38,18 @@ const corsOptions = {
 
 app.use(cors(corsOptions));
 
-// ✅ FIXED OPTIONS handler - No wildcard pattern
+// ✅ Enhanced OPTIONS handler for Vercel
 app.use((req, res, next) => {
   console.log(`🌐 ${req.method} ${req.url} from ${req.headers.origin || 'unknown'}`);
   
   if (req.method === 'OPTIONS') {
-    res.header('Access-Control-Allow-Origin', req.headers.origin);
+    const origin = req.headers.origin;
+    
+    // Allow Vercel domains and localhost
+    if (origin && (origin.includes('vercel.app') || origin.includes('localhost'))) {
+      res.header('Access-Control-Allow-Origin', origin);
+    }
+    
     res.header('Access-Control-Allow-Methods', 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS');
     res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, Accept');
     res.header('Access-Control-Allow-Credentials', true);
@@ -44,15 +60,22 @@ app.use((req, res, next) => {
 
 app.use(bodyParser.json({ limit: '50mb' }));
 
-// ✅ Socket.io setup
+// ✅ Socket.io setup with Vercel URLs
 const io = socketIo(server, {
   cors: {
     origin: [
       'http://localhost:3000',
-      'http://localhost:3001', 
+      'http://localhost:3001',
       'http://localhost:3002',
       'http://localhost:3003',
-      'http://localhost:3004'
+      'http://localhost:3004',
+      
+      // ✅ Vercel URLs
+      'https://student-frontend-olive.vercel.app',
+      'https://proctor-frontend-three.vercel.app',
+      
+      // Allow any vercel.app domain
+      /.*\.vercel\.app$/
     ],
     methods: ['GET', 'POST'],
     credentials: true,
@@ -203,19 +226,25 @@ const createWebRtcTransport = async () => {
   };
 };
 
-// Routes
+// ✅ Enhanced health check for Railway
 app.get('/api/health', (req, res) => {
   res.json({
     status: 'healthy',
     timestamp: new Date().toISOString(),
     activeRooms: rooms.size,
     activePeers: peers.size,
-    server: 'MediaSoup SFU Server v1.0',
+    server: 'MediaSoup SFU Server v1.0 - Railway',
+    environment: process.env.NODE_ENV || 'development',
+    port: process.env.PORT || 5000,
     worker: mediasoupWorker ? {
       pid: mediasoupWorker.pid,
       died: mediasoupWorker.died
     } : null,
-    cors: 'Multiple origins enabled'
+    cors: 'Vercel + Railway enabled',
+    frontends: {
+      student: 'https://student-frontend-olive.vercel.app',
+      proctor: 'https://proctor-frontend-three.vercel.app'
+    }
   });
 });
 
@@ -538,15 +567,65 @@ app.get('/api/debug/mediasoup', (req, res) => {
     rooms: roomsData,
     peers: peersData,
     totalRooms: rooms.size,
-    totalPeers: peers.size
+    totalPeers: peers.size,
+    timestamp: new Date().toISOString(),
+    deployment: 'Railway + Vercel'
+  });
+});
+
+// ✅ Debug endpoint for peer status
+app.get('/api/debug/peer/:peerId', (req, res) => {
+  const { peerId } = req.params;
+  
+  if (!peers.has(peerId)) {
+    return res.json({
+      success: false,
+      error: 'Peer not found',
+      peerId
+    });
+  }
+  
+  const peer = peers.get(peerId);
+  
+  res.json({
+    success: true,
+    peerId: peer.id,
+    roomId: peer.roomId,
+    hasTransport: !!peer.transport,
+    transportId: peer.transport?.id || null,
+    producers: peer.producers.size,
+    consumers: peer.consumers.size,
+    producerIds: Array.from(peer.producers.keys()),
+    consumerIds: Array.from(peer.consumers.keys()),
+    timestamp: new Date().toISOString()
+  });
+});
+
+// ✅ Root endpoint
+app.get('/', (req, res) => {
+  res.json({
+    message: 'MediaSoup SFU Server - Railway Deployment',
+    status: 'running',
+    version: '1.0.0',
+    endpoints: {
+      health: '/api/health',
+      rtpCapabilities: '/api/rtp-capabilities',
+      debug: '/api/debug/mediasoup',
+      stats: '/api/exam/:examId/stats'
+    },
+    frontends: {
+      student: 'https://student-frontend-olive.vercel.app',
+      proctor: 'https://proctor-frontend-three.vercel.app'
+    },
+    timestamp: new Date().toISOString()
   });
 });
 
 // ✅ Socket.io connections
-// ✅ FIXED Socket.io connections
 io.on('connection', (socket) => {
   console.log(`\n🔌 === NEW SOCKET CONNECTION ===`);
   console.log(`Socket ID: ${socket.id}`);
+  console.log(`Origin: ${socket.handshake.headers.origin || 'unknown'}`);
 
   socket.on('joinExam', ({ examId, role, userId }) => {
     console.log(`\n👤 === JOIN EXAM REQUEST ===`);
@@ -583,7 +662,7 @@ io.on('connection', (socket) => {
       message: 'Successfully joined exam room with SFU'
     });
 
-    // ✅ NEW: If proctor joins, send existing producers
+    // ✅ If proctor joins, send existing producers
     if (role === 'proctor') {
       console.log(`🛡️ Proctor joined - notifying about existing producers`);
       
@@ -602,8 +681,8 @@ io.on('connection', (socket) => {
     }
 
     // Handle disconnect
-    socket.on('disconnect', () => {
-      console.log(`\n🔌 Peer ${peerId} disconnected`);
+    socket.on('disconnect', (reason) => {
+      console.log(`\n🔌 Peer ${peerId} disconnected: ${reason}`);
       
       if (peers.has(peerId)) {
         const peer = peers.get(peerId);
@@ -626,22 +705,26 @@ io.on('connection', (socket) => {
   });
 });
 
-
-// Start server
+// ✅ Railway port configuration
 const startServer = async () => {
   try {
     await initializeMediasoup();
     
+    // ✅ Railway automatically provides PORT
     const PORT = process.env.PORT || 5000;
-    server.listen(PORT, () => {
-      console.log(`\n🚀 === MEDIASOUP SFU SERVER STARTED ===`);
+    
+    server.listen(PORT, '0.0.0.0', () => {
+      console.log(`\n🚀 === RAILWAY MEDIASOUP SFU DEPLOYED ===`);
       console.log(`📡 Server running on port ${PORT}`);
-      console.log(`📊 Health check: http://localhost:${PORT}/api/health`);
-      console.log(`🌐 CORS enabled for multiple origins:`);
-      console.log(`   ✅ http://localhost:3000 (Student)`);
-      console.log(`   ✅ http://localhost:3001 (Proctor)`);
-      console.log(`   ✅ http://localhost:3002+ (Additional)`);
-      console.log(`✅ MediaSoup SFU ready!\n`);
+      console.log(`🌐 Railway URL: ${process.env.RAILWAY_PUBLIC_DOMAIN || 'localhost'}`);
+      console.log(`📊 Health: https://${process.env.RAILWAY_PUBLIC_DOMAIN || 'localhost'}/api/health`);
+      console.log(`📊 Debug: https://${process.env.RAILWAY_PUBLIC_DOMAIN || 'localhost'}/api/debug/mediasoup`);
+      console.log(`🌐 CORS enabled for:`);
+      console.log(`   ✅ https://student-frontend-olive.vercel.app`);
+      console.log(`   ✅ https://proctor-frontend-three.vercel.app`);
+      console.log(`   ✅ All vercel.app subdomains`);
+      console.log(`   ✅ All localhost ports`);
+      console.log(`✅ Railway deployment successful!\n`);
     });
   } catch (error) {
     console.error('❌ Failed to start server:', error);
